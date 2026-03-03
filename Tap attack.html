@@ -1,0 +1,438 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Neon Tap Arena - Overdrive</title>
+<style>
+body{
+margin:0;
+background:#050505;
+overflow:hidden;
+font-family:Arial;
+}
+canvas{display:block;}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas=document.getElementById("gameCanvas");
+const ctx=canvas.getContext("2d");
+
+function resize(){
+canvas.width=window.innerWidth;
+canvas.height=window.innerHeight;
+}
+resize();
+window.addEventListener("resize",resize);
+
+// ================= STATE =================
+let gameState="START";
+let circles=[];
+let particles=[];
+let score=0;
+let lives=5;
+let combo=0;
+let comboTimer=0;
+let multiplier=1;
+let gravityMode=false;
+let difficulty=1;
+let screenShake=0;
+let leaderboard=JSON.parse(localStorage.getItem("leaderboard"))||[];
+
+let feverMode=false;
+let feverTimer=0;
+
+let timeScale=1;
+let slowTimer=0;
+
+let flashAlpha=0;
+
+// ================= CLASSES =================
+class Circle{
+constructor(x,y,r,color,type="normal"){
+this.x=x;
+this.y=y;
+this.r=r;
+this.color=color;
+this.type=type;
+this.vx=(Math.random()-0.5)*4;
+this.vy=(Math.random()-0.5)*4;
+this.dead=false;
+if(type==="bomb") this.timer=180;
+}
+
+update(){
+if(gravityMode) this.vy+=0.15*timeScale;
+
+this.x+=this.vx*timeScale;
+this.y+=this.vy*timeScale;
+
+if(this.x<this.r||this.x>canvas.width-this.r) this.vx*=-1;
+if(this.y<this.r||this.y>canvas.height-this.r) this.vy*=-1;
+
+if(this.type==="bomb"){
+this.timer-=1*timeScale;
+if(this.timer<=0){
+lives--;
+combo=0;
+multiplier=1;
+screenShake=20;
+explode(this.x,this.y,"#ff0033",50);
+this.dead=true;
+}
+}
+}
+
+draw(){
+ctx.shadowBlur=20;
+ctx.shadowColor=this.color;
+
+if(this.type==="bomb"){
+if(this.timer<60 && Math.floor(this.timer/5)%2===0){
+ctx.fillStyle="white";
+}else if(this.timer<120){
+ctx.fillStyle="orange";
+}else{
+ctx.fillStyle="#ff0033";
+}
+}else{
+ctx.fillStyle=this.color;
+}
+
+ctx.beginPath();
+ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+ctx.fill();
+ctx.shadowBlur=0;
+}
+}
+
+class Particle{
+constructor(x,y,color,intensity=1){
+this.x=x;
+this.y=y;
+this.life=1;
+this.size=Math.random()*5+2;
+this.color=color;
+this.vx=(Math.random()-0.5)*8*intensity;
+this.vy=(Math.random()-0.5)*8*intensity;
+}
+update(){
+this.x+=this.vx*timeScale;
+this.y+=this.vy*timeScale;
+this.life-=0.02*timeScale;
+}
+draw(){
+ctx.globalAlpha=this.life;
+ctx.fillStyle=this.color;
+ctx.beginPath();
+ctx.arc(this.x,this.y,this.size,0,Math.PI*2);
+ctx.fill();
+ctx.globalAlpha=1;
+}
+}
+
+// ================= EFFECTS =================
+function explode(x,y,color,intensity=25){
+for(let i=0;i<intensity;i++){
+particles.push(new Particle(x,y,color,intensity/25));
+}
+}
+
+function chainExplosion(x,y){
+let chainCount=0;
+
+for(let i=circles.length-1;i>=0;i--){
+let c=circles[i];
+let d=Math.hypot(x-c.x,y-c.y);
+
+if(d<130){
+chainCount++;
+explode(c.x,c.y,c.color,40);
+c.dead=true;
+}
+}
+
+if(chainCount>0){
+let bonus=Math.pow(2,Math.floor(chainCount/3));
+score+=20*bonus*(feverMode?3:1);
+screenShake=8+chainCount;
+
+if(chainCount>=3){
+timeScale=0.5;
+slowTimer=30;
+}
+}
+}
+
+// ================= PHYSICS =================
+function handleCircleCollisions(){
+for(let i=0;i<circles.length;i++){
+for(let j=i+1;j<circles.length;j++){
+
+let a=circles[i];
+let b=circles[j];
+
+let dx=b.x-a.x;
+let dy=b.y-a.y;
+let dist=Math.hypot(dx,dy);
+let minDist=a.r+b.r;
+
+if(dist<minDist && dist>0){
+
+// めり込み補正
+let overlap=minDist-dist;
+let nx=dx/dist;
+let ny=dy/dist;
+
+a.x-=nx*overlap/2;
+a.y-=ny*overlap/2;
+b.x+=nx*overlap/2;
+b.y+=ny*overlap/2;
+
+// 弾性衝突（質量＝半径）
+let dvx=b.vx-a.vx;
+let dvy=b.vy-a.vy;
+
+let impact=dvx*nx + dvy*ny;
+if(impact>0) continue;
+
+let m1=a.r;
+let m2=b.r;
+
+let impulse=(2*impact)/(m1+m2);
+
+a.vx+=impulse*m2*nx;
+a.vy+=impulse*m2*ny;
+
+b.vx-=impulse*m1*nx;
+b.vy-=impulse*m1*ny;
+}
+}
+}
+}
+
+// ================= SPAWN =================
+function spawnCircle(){
+circles.push(new Circle(
+Math.random()*canvas.width,
+Math.random()*canvas.height,
+20+Math.random()*20,
+`hsl(${Math.random()*360},80%,60%)`
+));
+}
+
+function spawnBomb(){
+circles.push(new Circle(
+Math.random()*canvas.width,
+Math.random()*canvas.height,
+25,
+"#ff0033",
+"bomb"
+));
+}
+
+function resetGame(){
+score=0;
+lives=5;
+combo=0;
+multiplier=1;
+comboTimer=0;
+difficulty=1;
+circles=[];
+particles=[];
+feverMode=false;
+feverTimer=0;
+timeScale=1;
+slowTimer=0;
+flashAlpha=0;
+screenShake=0;
+}
+
+// ================= INPUT =================
+canvas.addEventListener("mousedown",e=>{
+const rect=canvas.getBoundingClientRect();
+const mx=e.clientX-rect.left;
+const my=e.clientY-rect.top;
+
+if(gameState==="START"){
+resetGame();
+gameState="PLAYING";
+return;
+}
+
+if(gameState==="GAME_OVER"){
+resetGame();
+gameState="PLAYING";
+return;
+}
+
+if(gameState!=="PLAYING") return;
+
+for(let i=circles.length-1;i>=0;i--){
+let c=circles[i];
+let d=Math.hypot(mx-c.x,my-c.y);
+
+if(d<c.r){
+combo++;
+comboTimer=120;
+multiplier=1+Math.floor(combo/5);
+
+chainExplosion(c.x,c.y);
+
+score+=10*multiplier*(feverMode?3:1);
+if(c.type==="bomb") score+=50;
+
+c.dead=true;
+return;
+}
+}
+});
+
+window.addEventListener("keydown",e=>{
+if(e.key==="g") gravityMode=!gravityMode;
+});
+
+// ================= UPDATE =================
+function update(){
+if(gameState!=="PLAYING") return;
+
+difficulty+=0.001*timeScale;
+
+if(Math.random()<0.02*difficulty) spawnCircle();
+if(!feverMode && Math.random()<0.004*difficulty) spawnBomb();
+
+circles.forEach(c=>{
+c.vx*=1.0005;
+c.vy*=1.0005;
+c.update();
+});
+
+// ★物理衝突
+handleCircleCollisions();
+
+circles=circles.filter(c=>!c.dead);
+
+particles.forEach((p,i)=>{
+p.update();
+if(p.life<=0) particles.splice(i,1);
+});
+
+if(comboTimer>0) comboTimer--;
+else{ combo=0; multiplier=1; }
+
+if(combo>=25 && !feverMode){
+feverMode=true;
+feverTimer=300;
+screenShake=30;
+flashAlpha=1;
+}
+
+if(feverMode){
+feverTimer--;
+if(feverTimer<=0) feverMode=false;
+}
+
+if(slowTimer>0){
+slowTimer--;
+if(slowTimer<=0) timeScale=1;
+}
+
+if(lives<=0){
+gameState="GAME_OVER";
+leaderboard.push(score);
+leaderboard.sort((a,b)=>b-a);
+leaderboard=leaderboard.slice(0,5);
+localStorage.setItem("leaderboard",JSON.stringify(leaderboard));
+}
+}
+
+// ================= DRAW =================
+function draw(){
+ctx.clearRect(0,0,canvas.width,canvas.height);
+
+ctx.save();
+
+if(screenShake>0){
+ctx.translate((Math.random()-0.5)*screenShake,
+(Math.random()-0.5)*screenShake);
+screenShake--;
+}
+
+if(feverMode){
+ctx.fillStyle="rgba(0,0,0,0.4)";
+ctx.fillRect(0,0,canvas.width,canvas.height);
+}
+
+if(gameState==="START"){
+ctx.fillStyle="white";
+ctx.font="60px Arial";
+ctx.textAlign="center";
+ctx.fillText("NEON TAP OVERDRIVE",canvas.width/2,canvas.height/2);
+ctx.font="25px Arial";
+ctx.fillText("Click to Start",canvas.width/2,canvas.height/2+60);
+ctx.restore();
+return;
+}
+
+if(gameState==="GAME_OVER"){
+ctx.fillStyle="white";
+ctx.font="60px Arial";
+ctx.textAlign="center";
+ctx.fillText("GAME OVER",canvas.width/2,canvas.height/2);
+ctx.font="25px Arial";
+ctx.fillText("Score: "+score,canvas.width/2,canvas.height/2+50);
+ctx.fillText("Click to Restart",canvas.width/2,canvas.height/2+90);
+ctx.fillText("TOP SCORES",canvas.width/2,canvas.height/2+150);
+leaderboard.forEach((s,i)=>{
+ctx.fillText((i+1)+": "+s,canvas.width/2,canvas.height/2+180+i*30);
+});
+ctx.restore();
+return;
+}
+
+circles.forEach(c=>c.draw());
+particles.forEach(p=>p.draw());
+
+ctx.fillStyle="white";
+ctx.textAlign="left";
+ctx.font="20px Arial";
+ctx.fillText("Score: "+score,20,30);
+ctx.fillText("Lives: "+lives,20,55);
+ctx.fillText("Combo: "+combo+" x"+multiplier,20,80);
+ctx.fillText("Gravity(G): "+(gravityMode?"ON":"OFF"),20,105);
+
+if(feverMode){
+ctx.fillStyle="#00ffff";
+ctx.font="30px Arial";
+ctx.fillText("FEVER MODE!",20,140);
+}
+
+if(timeScale<1){
+ctx.fillStyle="#ff00ff";
+ctx.font="28px Arial";
+ctx.fillText("CHAIN SLOW!",20,175);
+}
+
+if(flashAlpha>0){
+ctx.fillStyle="white";
+ctx.globalAlpha=flashAlpha;
+ctx.fillRect(0,0,canvas.width,canvas.height);
+ctx.globalAlpha=1;
+flashAlpha-=0.05;
+}
+
+ctx.restore();
+}
+
+// ================= LOOP =================
+function loop(){
+update();
+draw();
+requestAnimationFrame(loop);
+}
+loop();
+
+</script>
+</body>
+</html>
